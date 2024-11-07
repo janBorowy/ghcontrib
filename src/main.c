@@ -4,7 +4,7 @@
 #include <string.h>
 
 static const char *GITHUB_API_URL = "https://api.github.com/graphql";
-static const char *GITHUB_TOKEN = "TOKEN";
+static const char *GITHUB_TOKEN = "token";
 static const char *CONTRIBUTION_QUERY = "query($userName:String!) { "
                                         "  user(login: $userName){ "
                                         "    contributionsCollection { "
@@ -24,6 +24,11 @@ static const char *CONTRIBUTION_QUERY = "query($userName:String!) { "
 struct CURLInstance {
     CURL *handle;
     struct curl_slist *headers;
+};
+
+struct Buffer {
+    char *data;
+    size_t size;
 };
 
 struct CURLInstance init_curl() {
@@ -47,25 +52,54 @@ void deinit_curl(struct CURLInstance curl) {
     curl_global_cleanup();
 }
 
-CURLcode print_contrib_data(struct CURLInstance curl, const char *username) {
+size_t write_callback(char *recived_data, size_t recived_size, size_t nmemb, void *userdata) {
+    struct Buffer *buf = (struct Buffer *) userdata;
+
+    char *p = realloc (buf->data, buf->size + recived_size + 1);
+    if (p == NULL) {
+        printf("Realloc failed: out of memory");
+        return 0;
+    }
+
+    buf->data = p;
+    memcpy(&(buf->data[buf->size]), recived_data, recived_size);
+    buf->size += recived_size;
+    buf->data[buf->size] = 0;
+
+    return nmemb;
+}
+
+json_object *get_contrib_data(struct CURLInstance curl, const char *username) {
     json_object *root = json_object_new_object();
     json_object_object_add(root, "query", json_object_new_string(CONTRIBUTION_QUERY));
     json_object *variables = json_object_new_object();
     json_object_object_add(variables, "userName", json_object_new_string(username));
     json_object_object_add(root, "variables", variables);
-    printf("%s\n", json_object_to_json_string(root));
+
+    struct Buffer *buf;
+    buf->data = malloc(1);
+    buf->size = 0;
 
     curl_easy_setopt(curl.handle, CURLOPT_POSTFIELDS, json_object_to_json_string(root));
-    CURLcode code = curl_easy_perform(curl.handle);
+    curl_easy_setopt(curl.handle, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl.handle, CURLOPT_WRITEDATA, (void *)buf);
 
     json_object_put(root);
 
-    return code;
+    CURLcode code = curl_easy_perform(curl.handle);
+
+    if (code != CURLE_OK) {
+        printf("CURL finished with error\n");
+        return NULL;
+    }
+    struct json_object *result = json_tokener_parse(buf->data);
+    return result;
 }
 
 int main() {
     struct CURLInstance curl = init_curl();
-    CURLcode code = print_contrib_data(curl, "janBorowy");
+    struct json_object *contrib = get_contrib_data(curl, "janBorowy");
+    printf("%s", json_object_to_json_string(contrib));
     deinit_curl(curl);
     return 0;
 }
